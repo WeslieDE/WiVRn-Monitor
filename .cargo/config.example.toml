@@ -1,0 +1,3 @@
+# Optional: copy to `.cargo/config.toml` (git-ignored) to keep build data on another drive.
+# [build]
+# target-dir = "/path/to/big/drive/cargo-target/wivrn-monitor"

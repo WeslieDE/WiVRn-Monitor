@@ -4,7 +4,7 @@ How to build, package and release. How the program works internally is described
 
 ## Build
 
-Build data goes to `/run/media/weslie/Daten/cargo-target/wivrn-monitor` (see `.cargo/config.toml`).
+By default cargo builds into `./target`. To keep build data on another drive, copy `.cargo/config.example.toml` to `.cargo/config.toml` (git-ignored) and set `target-dir`, or export `CARGO_TARGET_DIR`.
 
     cargo build --release
 

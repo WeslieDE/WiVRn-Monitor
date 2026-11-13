@@ -1,1 +1,4 @@
 target/
+
+# Local-only cargo settings (e.g. target-dir on another drive); do not commit
+.cargo/config.toml

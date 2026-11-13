@@ -4,7 +4,8 @@
 # The layer is implicit but only ever loads inside `wivrn-server`; restart wivrn-server afterwards.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TARGET="${CARGO_TARGET_DIR:-/run/media/weslie/Daten/cargo-target/wivrn-monitor}"
+# Build output dir: $CARGO_TARGET_DIR, else whatever cargo uses (honours a local .cargo/config.toml), else ./target.
+TARGET="${CARGO_TARGET_DIR:-$(cd "$ROOT" && cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["target_directory"])' 2>/dev/null || echo "$ROOT/target")}"
 PROFILE=release; [[ "${1:-}" == "--debug" ]] && { PROFILE=debug; shift; }
 DEST="$HOME/.local/share/wivrn-monitor"
 LAYERS="${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/implicit_layer.d"

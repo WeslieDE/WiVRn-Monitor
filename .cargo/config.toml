@@ -1,3 +1,0 @@
-# Build data goes to the data drive, not the nearly full home partition.
-[build]
-target-dir = "/run/media/weslie/Daten/cargo-target/wivrn-monitor"
