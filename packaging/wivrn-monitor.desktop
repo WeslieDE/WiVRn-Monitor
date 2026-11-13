@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=WiVRn Monitor
+Comment=Desktop mirror of the WiVRn VR session (right eye)
+Exec=wivrn-monitor-viewer
+Icon=wivrn-monitor
+Categories=Utility;
+Terminal=false
+StartupWMClass=wivrn-monitor

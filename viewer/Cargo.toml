@@ -1,0 +1,16 @@
+[package]
+name = "wivrn-monitor-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "wivrn-monitor-viewer"
+path = "src/main.rs"
+
+[dependencies]
+wivrn-monitor-protocol = { path = "../protocol" }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -1,0 +1,14 @@
+{
+    "file_format_version": "1.1.2",
+    "layer": {
+        "name": "VK_LAYER_WESLIE_wivrn_monitor_server",
+        "type": "GLOBAL",
+        "library_path": "libwivrn_monitor_server_layer.so",
+        "api_version": "1.4.0",
+        "implementation_version": "1",
+        "description": "WiVRn-Monitor: mirrors the composed right eye from inside wivrn-server (only loads there)",
+        "disable_environment": {
+            "DISABLE_WIVRN_MONITOR_SERVER": "1"
+        }
+    }
+}

@@ -1,0 +1,109 @@
+// WiVRn-Monitor server layer: copies the unfoveated right eye (source[1] of WiVRn's foveation
+// pass) into a host-visible buffer, centre-cropped to a fixed aspect ratio and downscaled.
+// Set 0 is WiVRn's own foveation descriptor set (re-used as is), set 1 is our output buffer.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#define MAX_DIM 4097
+
+layout(constant_id = 0) const uint MAX_W = 1280;     // maximum output width
+layout(constant_id = 1) const uint CAP_H = 1920;     // maximum output height
+layout(constant_id = 2) const uint ASPECT_NUM = 16;  // 0 = native (no crop)
+layout(constant_id = 3) const uint ASPECT_DEN = 9;
+
+layout(set = 0, binding = 0) uniform sampler2D source[2];
+layout(set = 0, binding = 1, std430) readonly buffer Config
+{
+	uint x[2 * MAX_DIM];
+	uint y[2 * MAX_DIM];
+} ubo;
+
+// data[0..3] = header (width, height, magic, source rect w | h << 16); pixels start at data[64].
+layout(set = 1, binding = 0, std430) writeonly buffer Out
+{
+	uint data[];
+} outb;
+
+float to_srgb(float v)
+{
+	v = clamp(v, 0.0, 1.0);
+	return v < 0.0031308 ? 12.92 * v : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+}
+
+uint pack_channel(float v)
+{
+	return uint(clamp(to_srgb(v), 0.0, 1.0) * 255.0 + 0.5);
+}
+
+void main()
+{
+	uint ox = gl_GlobalInvocationID.x;
+	uint oy = gl_GlobalInvocationID.y;
+
+	// Source rect of the right eye: x[0]/x[end] are its borders (the tail of the array repeats the
+	// last value, so index 4096 is always the end). Start > end means mirrored.
+	int x0 = int(ubo.x[MAX_DIM]);
+	int x1 = int(ubo.x[MAX_DIM + 4096]);
+	int y0 = int(ubo.y[MAX_DIM]);
+	int y1 = int(ubo.y[MAX_DIM + 4096]);
+	uint sw = uint(abs(x1 - x0));
+	uint sh = uint(abs(y1 - y0));
+
+	uint cw = sw;
+	uint ch = sh;
+	if (ASPECT_NUM > 0 && sw > 0 && sh > 0) {
+		if (sw * ASPECT_DEN > sh * ASPECT_NUM)
+			cw = max((sh * ASPECT_NUM) / ASPECT_DEN, 1u);
+		else
+			ch = max((sw * ASPECT_DEN) / ASPECT_NUM, 1u);
+	}
+
+	uint tw = 0;
+	uint th = 0;
+	if (cw > 0 && ch > 0) {
+		tw = min(cw, MAX_W);
+		if (ASPECT_NUM > 0)
+			th = max((tw * ASPECT_DEN + ASPECT_NUM / 2) / ASPECT_NUM, 1u);
+		else
+			th = max((tw * ch + cw / 2) / cw, 1u);
+		if (th > CAP_H) {
+			th = CAP_H;
+			tw = max((th * cw) / ch, 1u);
+		}
+	}
+
+	if (ox == 0 && oy == 0) {
+		outb.data[0] = tw;
+		outb.data[1] = th;
+		outb.data[2] = 0x574d5652u;
+		outb.data[3] = sw | (sh << 16);
+	}
+	if (ox >= tw || oy >= th)
+		return;
+
+	uint cox = (sw - cw) / 2;
+	uint coy = (sh - ch) / 2;
+	uint rx0 = cox + (ox * cw) / tw;
+	uint rx1 = max(cox + ((ox + 1) * cw) / tw, rx0 + 1);
+	uint ry0 = coy + (oy * ch) / th;
+	uint ry1 = max(coy + ((oy + 1) * ch) / th, ry0 + 1);
+	uint xstep = (rx1 - rx0 + 3) / 4;
+	uint ystep = (ry1 - ry0 + 3) / 4;
+
+	ivec2 last = textureSize(source[1], 0) - 1;
+	vec4 sum = vec4(0);
+	uint count = 0;
+	for (uint ry = ry0; ry < ry1; ry += ystep) {
+		int py = y1 >= y0 ? y0 + int(ry) : y0 - 1 - int(ry);
+		for (uint rx = rx0; rx < rx1; rx += xstep) {
+			int px = x1 >= x0 ? x0 + int(rx) : x0 - 1 - int(rx);
+			sum += texelFetch(source[1], clamp(ivec2(px, py), ivec2(0), last), 0);
+			++count;
+		}
+	}
+	sum /= float(max(count, 1u));
+
+	uint packed = pack_channel(sum.r) | (pack_channel(sum.g) << 8) | (pack_channel(sum.b) << 16) | (255u << 24);
+	outb.data[64 + oy * tw + ox] = packed;
+}

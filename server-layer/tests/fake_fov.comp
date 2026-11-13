@@ -1,0 +1,21 @@
+// Test stand-in for WiVRn's foveation.comp: same descriptor bindings (sampler2D[2], SSBO, 2 storage images).
+#version 460
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+#define MAX_DIM 4097
+layout(set = 0, binding = 0) uniform sampler2D source[2];
+layout(set = 0, binding = 1, std430) buffer restrict Config
+{
+	uint x[2*MAX_DIM];
+	uint y[2*MAX_DIM];
+} ubo;
+layout(set = 0, binding = 2, r8) uniform writeonly restrict image2DArray luma;
+layout(set = 0, binding = 3, rg8) uniform writeonly restrict image2DArray chroma;
+void main()
+{
+	uvec3 g = gl_GlobalInvocationID;
+	vec4 c = texelFetch(source[g.z], ivec2(g.xy), 0);
+	float k = float(ubo.x[MAX_DIM * g.z] & 1u) * 0.0;
+	imageStore(luma, ivec3(g), vec4(c.x + k));
+	if ((g.x % 2u) == 0u && (g.y % 2u) == 0u)
+		imageStore(chroma, ivec3(g.xy / 2u, g.z), vec4(c.yz, 0, 0));
+}

@@ -1,0 +1,66 @@
+# GitHub Actions: build the AppImage on every push to main and publish it as rolling release "latest"
+# (tags v* get a regular release). Same build logic as .gitea/workflows/release.yml.
+# Uses only the automatic GITHUB_TOKEN; no secrets to configure.
+# Note: Gitea runs .github/workflows only if .gitea/workflows does not exist; the `if` below additionally
+# prevents this workflow from running on a Gitea instance (no double builds).
+name: release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-22.04   # glibc 2.35 = minimum glibc of the AppImage
+    env:
+      ASSET: WiVRn-Monitor-x86_64.AppImage
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Build dependencies
+        run: scripts/ci-deps.sh
+
+      - name: Lint and test
+        run: |
+          . "$HOME/.cargo/env"
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --release --locked
+
+      - name: Build AppImage
+        run: |
+          . "$HOME/.cargo/env"
+          OUT_DIR="$PWD/dist" scripts/build-appimage.sh --native
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WiVRn-Monitor-x86_64.AppImage
+          path: dist/WiVRn-Monitor-x86_64.AppImage
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            gh release create "${GITHUB_REF_NAME}" "dist/${ASSET}" --title "WiVRn Monitor ${GITHUB_REF_NAME}" \
+              --notes "Automated build of commit ${GITHUB_SHA}" --latest
+          else
+            gh release delete latest --cleanup-tag -y || true
+            gh release create latest "dist/${ASSET}" --title "WiVRn Monitor (latest build)" \
+              --notes "Automated build of commit ${GITHUB_SHA}" --target "${GITHUB_SHA}" --prerelease
+          fi

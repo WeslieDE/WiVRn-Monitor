@@ -1,0 +1,10 @@
+[package]
+name = "wivrn-monitor-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "wivrn_monitor_protocol"
+
+[dependencies]
+libc = "0.2"

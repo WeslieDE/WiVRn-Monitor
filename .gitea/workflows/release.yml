@@ -1,0 +1,84 @@
+# Gitea Actions: build the AppImage on every push to main and publish it as rolling release "latest"
+# (tags v* additionally get a regular release with that tag).
+#
+# ASSUMPTIONS / HOW TO ADAPT
+# - Runner label: `runs-on: ubuntu-latest` is a guess. Check the labels of your act_runner (Gitea: Site Admin ->
+#   Actions -> Runners, or `.runner` file / `labels:` in the act_runner config) and change `runs-on` to a label
+#   that runs jobs in Docker containers (e.g. `ubuntu-22.04`, `docker`, `self-hosted`).
+# - The job runs in `container: ubuntu:22.04` (glibc 2.35 = minimum glibc of the AppImage). The runner therefore
+#   needs Docker/Podman access (normal for label schema `docker://...`). If your label is `host` schema, remove
+#   the `container:` block and use a Ubuntu 22.04 host instead.
+# - Ubuntu images have no Node.js, so JS actions (actions/checkout, actions/cache) are NOT used: the repo is
+#   fetched with plain `git clone` + token, which also works when the runner cannot reach github.com.
+#   (With a Node-capable image you can swap in `actions/checkout@v4`.)
+# - No extra secrets needed: the automatic job token (secrets.GITHUB_TOKEN / gitea.token) is used. It needs write access
+#   to releases (Gitea: Settings -> Actions -> token permissions "read and write", if restricted).
+# - Gitea reads .gitea/workflows first; .github/workflows is only used when .gitea/workflows does not exist.
+#   The GitHub workflow also has an `if: github.server_url == 'https://github.com'` guard, so no double builds.
+name: release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  appimage:
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    env:
+      ASSET: WiVRn-Monitor-x86_64.AppImage
+    steps:
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl jq sudo
+
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          url="${{ gitea.server_url }}/${{ gitea.repository }}.git"
+          git -c http.extraheader="Authorization: Basic $(printf 'ci:%s' "$TOKEN" | base64 -w0)" clone --depth 1 --no-single-branch "$url" src
+          cd src
+          git checkout --quiet "${{ gitea.sha }}"
+
+      - name: Build dependencies
+        run: src/scripts/ci-deps.sh
+
+      - name: Lint and test
+        working-directory: src
+        run: |
+          . "$HOME/.cargo/env"
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --release --locked
+
+      - name: Build AppImage
+        working-directory: src
+        run: |
+          . "$HOME/.cargo/env"
+          export OUT_DIR="$PWD/dist"
+          # appimagetool is fetched by the script; --appimage-extract-and-run needs no FUSE.
+          scripts/build-appimage.sh --native
+          ls -l dist
+
+      - name: Publish release
+        working-directory: src
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          api="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}"
+          auth="Authorization: token ${TOKEN}"
+          sha="${{ gitea.sha }}"
+          if [[ "${{ gitea.ref }}" == refs/tags/v* ]]; then tag="${{ gitea.ref_name }}"; prerelease=false; name="WiVRn Monitor ${tag}"
+          else tag=latest; prerelease=true; name="WiVRn Monitor (latest build)"; fi
+          # Replace an existing release (and its tag for the rolling "latest") instead of accumulating assets.
+          rid=$(curl -fsS -H "$auth" "$api/releases/tags/$tag" | jq -r '.id // empty' || true)
+          if [[ -n "$rid" ]]; then curl -fsS -X DELETE -H "$auth" "$api/releases/$rid"; fi
+          if [[ "$tag" == latest ]]; then curl -sS -X DELETE -H "$auth" "$api/tags/latest" || true; fi
+          body="Automated build of commit ${sha}"
+          rid=$(jq -n --arg t "$tag" --arg n "$name" --arg b "$body" --arg s "$sha" --argjson p "$prerelease" \
+                '{tag_name:$t,name:$n,body:$b,target_commitish:$s,prerelease:$p}' \
+              | curl -fsS -X POST -H "$auth" -H 'Content-Type: application/json' -d @- "$api/releases" | jq -r .id)
+          curl -fsS -X POST -H "$auth" -F "attachment=@dist/${ASSET}" "$api/releases/${rid}/assets?name=${ASSET}" >/dev/null
+          echo "Published $tag (release id $rid)"

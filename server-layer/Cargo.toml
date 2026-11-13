@@ -1,0 +1,14 @@
+[package]
+name = "wivrn-monitor-server-layer"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "wivrn_monitor_server_layer"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ash = { version = "0.38", default-features = false, features = ["loaded", "std", "debug"] }
+libc = "0.2"
+wivrn-monitor-protocol = { path = "../protocol" }
