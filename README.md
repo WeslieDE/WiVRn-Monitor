@@ -1,4 +1,3 @@
-<p align="center"><img src="assets/icon-512.png" width="180" alt="WiVRn Monitor icon: a small dragon wearing a VR headset in front of a monitor"></p>
 
 # WiVRn Monitor
 
