@@ -71,18 +71,19 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # -k: git.lan uses a self-signed/internal certificate that the job container does not trust (LAN-only server).
           api="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}"
           auth="Authorization: token ${TOKEN}"
           sha="${{ gitea.sha }}"
           if [[ "${{ gitea.ref }}" == refs/tags/v* ]]; then tag="${{ gitea.ref_name }}"; prerelease=false; name="WiVRn Monitor ${tag}"
           else tag=latest; prerelease=true; name="WiVRn Monitor (latest build)"; fi
           # Replace an existing release (and its tag for the rolling "latest") instead of accumulating assets.
-          rid=$(curl -fsS -H "$auth" "$api/releases/tags/$tag" | jq -r '.id // empty' || true)
-          if [[ -n "$rid" ]]; then curl -fsS -X DELETE -H "$auth" "$api/releases/$rid"; fi
-          if [[ "$tag" == latest ]]; then curl -sS -X DELETE -H "$auth" "$api/tags/latest" || true; fi
+          rid=$(curl -kfsS -H "$auth" "$api/releases/tags/$tag" | jq -r '.id // empty' || true)
+          if [[ -n "$rid" ]]; then curl -kfsS -X DELETE -H "$auth" "$api/releases/$rid"; fi
+          if [[ "$tag" == latest ]]; then curl -ksS -X DELETE -H "$auth" "$api/tags/latest" || true; fi
           body="Automated build of commit ${sha}"
           rid=$(jq -n --arg t "$tag" --arg n "$name" --arg b "$body" --arg s "$sha" --argjson p "$prerelease" \
                 '{tag_name:$t,name:$n,body:$b,target_commitish:$s,prerelease:$p}' \
-              | curl -fsS -X POST -H "$auth" -H 'Content-Type: application/json' -d @- "$api/releases" | jq -r .id)
-          curl -fsS -X POST -H "$auth" -F "attachment=@dist/${ASSET}" "$api/releases/${rid}/assets?name=${ASSET}" >/dev/null
+              | curl -kfsS -X POST -H "$auth" -H 'Content-Type: application/json' -d @- "$api/releases" | jq -r .id)
+          curl -kfsS -X POST -H "$auth" -F "attachment=@dist/${ASSET}" "$api/releases/${rid}/assets?name=${ASSET}" >/dev/null
           echo "Published $tag (release id $rid)"

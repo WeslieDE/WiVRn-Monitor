@@ -60,9 +60,13 @@ jobs:
             gh release create "${GITHUB_REF_NAME}" "dist/${ASSET}" --title "WiVRn Monitor ${GITHUB_REF_NAME}" \
               --notes "Automated build of commit ${GITHUB_SHA}" --latest
           else
-            # Replace the rolling release; only delete what exists so the log stays free of 422 noise.
-            if gh release view latest >/dev/null 2>&1; then gh release delete latest -y; fi
+            # Rolling release "latest": remove old releases (incl. drafts) and the tag, recreate the tag at this
+            # commit first, then create the release for the existing tag (otherwise it can stay an unpublished draft).
+            for id in $(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq '.[] | select(.tag_name=="latest") | .id'); do
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${id}"
+            done
             gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" >/dev/null 2>&1 || true
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref=refs/tags/latest -f sha="${GITHUB_SHA}" >/dev/null
             gh release create latest "dist/${ASSET}" --title "WiVRn Monitor (latest build)" \
-              --notes "Automated build of commit ${GITHUB_SHA}" --target "${GITHUB_SHA}" --prerelease
+              --notes "Automated build of commit ${GITHUB_SHA}" --verify-tag --latest
           fi
