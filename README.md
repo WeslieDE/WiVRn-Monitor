@@ -10,7 +10,7 @@ that streams VR from your Linux PC to a headset like the Meta Quest.
 
 If you know "Display VR View" from SteamVR: it's that idea, for WiVRn.
 
-<p align="center"><img src="assets/screenshot.png" width="720" alt="The WiVRn Monitor window showing a test image, with the status bar at the bottom"></p>
+<p align="center"><img src="assets/screenshot.png" width="720" alt="The WiVRn Monitor window showing the live VR view, with the status bar at the bottom"></p>
 <p align="center"><em>The window with a test image. In real use, you see the VR picture here.</em></p>
 
 # What it's good for

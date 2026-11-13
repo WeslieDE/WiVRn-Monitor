@@ -87,4 +87,4 @@ Wayland comes from `packaging/wivrn-monitor.desktop` (`Icon=wivrn-monitor`, `Sta
 `wivrn-monitor`), so it appears when run from the AppImage via an integration tool (e.g. AppImageLauncher) or after installing
 the `.desktop` file and icon (`~/.local/share/applications`, `~/.local/share/icons/hicolor/256x256/apps/wivrn-monitor.png`).
 
-The README screenshot `assets/screenshot.png` shows the test pattern from `fake_layer`.
+The README screenshot `assets/screenshot.png` is a real capture of the viewer during a WiVRn session.
