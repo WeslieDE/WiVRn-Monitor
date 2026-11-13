@@ -14,7 +14,7 @@ use wivrn_monitor_protocol as proto;
 
 const STALE_AFTER: Duration = Duration::from_secs(2);
 const STATUS_REFRESH: Duration = Duration::from_secs(2);
-const RESTART_HINT: &str = "Bitte wivrn-server neu starten, damit die Änderung wirksam wird (wird nicht automatisch gemacht).";
+const RESTART_HINT: &str = "Restart the WiVRn server for the change to take effect (the monitor does not do this for you).";
 
 const OK: Color32 = Color32::from_rgb(0x5C, 0xC0, 0x6E);
 const WARN: Color32 = Color32::from_rgb(0xE0, 0xA0, 0x30);
@@ -67,7 +67,7 @@ impl App {
                 self.restart_hint = true;
                 self.message = Some((false, format!("{what}\n\n{RESTART_HINT}")));
             }
-            Err(e) => self.message = Some((true, format!("{what} fehlgeschlagen:\n{e}"))),
+            Err(e) => self.message = Some((true, format!("{what} failed:\n{e}"))),
         }
         self.refresh_status();
     }
@@ -99,35 +99,35 @@ impl App {
 
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("Datei", |ui| {
-                if ui.button("Layer installieren").clicked() {
+            ui.menu_button("File", |ui| {
+                if ui.button("Install layer").clicked() {
                     let r = layer_install::install(self.bundle.as_ref());
-                    self.report("Layer installiert.", r);
+                    self.report("Layer installed.", r);
                     ui.close();
                 }
-                if ui.button("Layer deinstallieren").clicked() {
+                if ui.button("Uninstall layer").clicked() {
                     let r = layer_install::uninstall();
-                    self.report("Layer deinstalliert.", r);
+                    self.report("Layer uninstalled.", r);
                     ui.close();
                 }
                 if self.status.legacy {
                     ui.separator();
-                    if ui.button("Alten OpenXR-Layer entfernen").clicked() {
+                    if ui.button("Remove old OpenXR layer").clicked() {
                         let r = layer_install::remove_legacy();
-                        self.report("Alter OpenXR-Layer entfernt.", r);
+                        self.report("Old OpenXR layer removed.", r);
                         ui.close();
                     }
                 }
                 ui.separator();
-                if ui.button("Beenden").clicked() {
+                if ui.button("Quit").clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
-            ui.menu_button("Ansicht", |ui| {
-                ui.checkbox(&mut self.show_fps_overlay, "FPS-Overlay");
+            ui.menu_button("View", |ui| {
+                ui.checkbox(&mut self.show_fps_overlay, "FPS overlay");
             });
-            ui.menu_button("Hilfe", |ui| {
-                if ui.button("Über").clicked() {
+            ui.menu_button("Help", |ui| {
+                if ui.button("About").clicked() {
                     self.show_about = true;
                     ui.close();
                 }
@@ -144,23 +144,23 @@ impl App {
         ui.horizontal(|ui| {
             dot(ui, layer_color, &format!("Layer: {}", self.status.layer.label()));
             ui.separator();
-            let (c, t) = if self.status.server_running { (OK, "läuft") } else { (DIM, "läuft nicht") };
-            dot(ui, c, &format!("wivrn-server: {t}"));
+            let (c, t) = if self.status.server_running { (OK, "running") } else { (DIM, "not running") };
+            dot(ui, c, &format!("WiVRn server: {t}"));
             ui.separator();
-            let (c, t) = if fi.connected { (OK, "verbunden") } else { (WARN, "wartet") };
-            dot(ui, c, &format!("Verbindung: {t}"));
+            let (c, t) = if fi.connected { (OK, "connected") } else { (WARN, "waiting") };
+            dot(ui, c, &format!("Connection: {t}"));
             ui.separator();
             match (fi.size, fi.age) {
                 (Some((w, h)), Some(age)) => {
                     let stale = age > STALE_AFTER;
                     let txt = if stale {
-                        format!("Frames: {w}x{h}, letzter vor {:.0} s", age.as_secs_f32())
+                        format!("Frames: {w}x{h}, last one {:.0} s ago", age.as_secs_f32())
                     } else {
-                        format!("Frames: {w}x{h}, {} FPS", fi.fps)
+                        format!("Frames: {w}x{h} @ {} FPS", fi.fps)
                     };
                     dot(ui, if stale { WARN } else { OK }, &txt);
                 }
-                _ => dot(ui, DIM, "Frames: keine"),
+                _ => dot(ui, DIM, "Frames: no new frames"),
             }
         });
     }
@@ -169,15 +169,15 @@ impl App {
         let rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(0x10, 0x12, 0x16));
         let (Some(tex), Some((w, h))) = (&self.texture, fi.size) else {
-            let text = if fi.connected { "Verbunden - warte auf Frames..." } else { "Warte auf VR-Session..." };
+            let text = if fi.connected { "Connected – waiting for frames…" } else { "Waiting for VR session…" };
             let mut lines = text.to_string();
             if !fi.connected {
                 lines.push_str(if !self.status.server_running {
-                    "\nwivrn-server läuft nicht."
+                    "\nThe WiVRn server is not running."
                 } else if self.status.layer != LayerState::Installed {
-                    "\nLayer ist nicht (aktuell) installiert: Menü Datei - Layer installieren."
+                    "\nThe layer is not installed (or outdated): use File > Install layer."
                 } else {
-                    "\nStarte eine VR-Anwendung bzw. verbinde das Headset."
+                    "\nStart a VR app or connect your headset."
                 });
             }
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, lines, egui::FontId::proportional(20.0), Color32::from_rgb(0xC8, 0xCC, 0xD4));
@@ -187,7 +187,7 @@ impl App {
         let img_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(rw as f32, rh as f32));
         ui.painter().image(tex.id(), img_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
         if fi.age.is_some_and(|a| a > STALE_AFTER) {
-            overlay(ui, rect.left_top() + egui::vec2(8.0, 8.0), egui::Align2::LEFT_TOP, "Keine neuen Frames", WARN);
+            overlay(ui, rect.left_top() + egui::vec2(8.0, 8.0), egui::Align2::LEFT_TOP, "No new frames", WARN);
         }
         if self.show_fps_overlay {
             overlay(ui, rect.right_top() + egui::vec2(-8.0, 8.0), egui::Align2::RIGHT_TOP, &format!("{} FPS  {w}x{h}", fi.fps), Color32::from_rgb(0xE6, 0xE8, 0xEC));
@@ -203,7 +203,9 @@ struct FrameInfo {
 }
 
 fn dot(ui: &mut egui::Ui, color: Color32, text: &str) {
-    ui.label(RichText::new("●").color(color));
+    // Draw the dot ourselves: the default font has no "●" glyph.
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 4.5, color);
     ui.label(RichText::new(text).small());
 }
 
@@ -228,7 +230,7 @@ impl eframe::App for App {
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::bottom("status").show(ui, |ui| {
             if self.restart_hint {
-                ui.label(RichText::new(format!("Hinweis: {RESTART_HINT}")).small().color(WARN));
+                ui.label(RichText::new(format!("Note: {RESTART_HINT}")).small().color(WARN));
             }
             self.status_bar(ui, &fi);
         });
@@ -236,7 +238,7 @@ impl eframe::App for App {
 
         if let Some((is_err, text)) = self.message.clone() {
             let mut open = true;
-            egui::Window::new(if is_err { "Fehler" } else { "Layer" })
+            egui::Window::new(if is_err { "Error" } else { "Layer" })
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -252,8 +254,9 @@ impl eframe::App for App {
             }
         }
         if self.show_about {
-            egui::Window::new("Über WiVRn Monitor").collapsible(false).resizable(false).open(&mut self.show_about).show(&ctx, |ui| {
-                ui.label("Zeigt das rechte Auge einer WiVRn-Session.");
+            egui::Window::new("About WiVRn Monitor").collapsible(false).resizable(false).open(&mut self.show_about).show(&ctx, |ui| {
+                ui.label("Shows the right eye of your WiVRn VR session in a desktop window.");
+                ui.label("The layer is a small add-on that lets the monitor see the VR image.");
                 ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
                 ui.label(format!("Socket: {}", proto::socket_path().display()));
             });
@@ -281,7 +284,7 @@ fn run_cli(args: &[String]) -> Option<i32> {
             println!("{}", layer_install::layer_state(bundle.as_ref()).label());
             Some(0)
         }
-        // install -> status must be "installiert" -> uninstall -> "nicht installiert"; use with WIVRN_MONITOR_HOME_OVERRIDE.
+        // install -> status must be "installed" -> uninstall -> "not installed"; use with WIVRN_MONITOR_HOME_OVERRIDE.
         "--self-test-install" => {
             let ok = (|| -> Result<(), String> {
                 let b = bundle.as_ref();
@@ -290,13 +293,13 @@ fn run_cli(args: &[String]) -> Option<i32> {
                 let s = layer_install::layer_state(b);
                 println!("after install: {}", s.label());
                 if s != LayerState::Installed {
-                    return Err("state after install is not 'installiert'".into());
+                    return Err("state after install is not 'installed'".into());
                 }
                 layer_install::uninstall()?;
                 let s = layer_install::layer_state(b);
                 println!("after uninstall: {}", s.label());
                 if s != LayerState::NotInstalled {
-                    return Err("state after uninstall is not 'nicht installiert'".into());
+                    return Err("state after uninstall is not 'not installed'".into());
                 }
                 Ok(())
             })();

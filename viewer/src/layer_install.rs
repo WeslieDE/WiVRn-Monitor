@@ -87,9 +87,9 @@ pub enum LayerState {
 impl LayerState {
     pub fn label(&self) -> String {
         match self {
-            LayerState::NotInstalled => "nicht installiert".into(),
-            LayerState::Installed => "installiert".into(),
-            LayerState::Outdated(why) => format!("veraltet - neu installieren ({why})"),
+            LayerState::NotInstalled => "not installed".into(),
+            LayerState::Installed => "installed".into(),
+            LayerState::Outdated(why) => format!("outdated – reinstall ({why})"),
         }
     }
 }
@@ -117,18 +117,18 @@ pub fn layer_state(bundle: Option<&Bundle>) -> LayerState {
         return LayerState::NotInstalled;
     }
     if !manifest.exists() {
-        return LayerState::Outdated("Manifest fehlt".into());
+        return LayerState::Outdated("manifest missing".into());
     }
     let Some(lib) = manifest_library_path(&manifest) else {
-        return LayerState::Outdated("Manifest unlesbar".into());
+        return LayerState::Outdated("manifest unreadable".into());
     };
     if !lib.is_file() {
-        return LayerState::Outdated("Bibliothek fehlt".into());
+        return LayerState::Outdated("library missing".into());
     }
     if let Some(b) = bundle {
         match (hash_file(&lib), hash_file(&b.so)) {
             (Ok(a), Ok(c)) if a == c => {}
-            _ => return LayerState::Outdated("andere Version".into()),
+            _ => return LayerState::Outdated("different version".into()),
         }
     }
     LayerState::Installed
@@ -144,7 +144,7 @@ fn ctx<T>(r: io::Result<T>, what: impl FnOnce() -> String) -> Result<T, String> 
 
 /// Writes `data` next to `dest` and renames it over it (running processes keep the old inode).
 fn write_atomic(dest: &Path, data: &[u8], mode: u32) -> io::Result<()> {
-    let dir = dest.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "kein Zielverzeichnis"))?;
+    let dir = dest.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no target directory"))?;
     fs::create_dir_all(dir)?;
     let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = dir.join(format!(".{name}.{}.new", std::process::id()));
@@ -159,25 +159,25 @@ fn write_atomic(dest: &Path, data: &[u8], mode: u32) -> io::Result<()> {
 
 /// Builds the manifest text with `library_path` pointing to `lib`.
 pub fn render_manifest(template: &str, lib: &Path) -> Result<String, String> {
-    let mut v: serde_json::Value = serde_json::from_str(template).map_err(|e| format!("Manifest-Vorlage ungültig: {e}"))?;
+    let mut v: serde_json::Value = serde_json::from_str(template).map_err(|e| format!("Invalid manifest template: {e}"))?;
     let layer = v
         .get_mut("layer")
         .and_then(|l| l.as_object_mut())
-        .ok_or("Manifest-Vorlage ohne \"layer\"-Objekt")?;
+        .ok_or("Manifest template has no \"layer\" object")?;
     layer.insert("library_path".into(), serde_json::Value::String(lib.to_string_lossy().into_owned()));
     serde_json::to_string_pretty(&v).map(|s| s + "\n").map_err(|e| e.to_string())
 }
 
 pub fn install(bundle: Option<&Bundle>) -> Result<(), String> {
-    let b = bundle.ok_or("Layer-Dateien nicht gefunden (WIVRN_MONITOR_LAYER_DIR prüfen oder Viewer neu bauen)")?;
-    let so_data = ctx(fs::read(&b.so), || format!("{} lesen", b.so.display()))?;
-    let template = ctx(fs::read_to_string(&b.manifest_template), || format!("{} lesen", b.manifest_template.display()))?;
+    let b = bundle.ok_or("Layer files not found (check WIVRN_MONITOR_LAYER_DIR or rebuild the viewer)")?;
+    let so_data = ctx(fs::read(&b.so), || format!("Reading {}", b.so.display()))?;
+    let template = ctx(fs::read_to_string(&b.manifest_template), || format!("Reading {}", b.manifest_template.display()))?;
     let dest_so = installed_so_path();
     let manifest = render_manifest(&template, &dest_so)?;
-    ctx(write_atomic(&dest_so, &so_data, 0o755), || format!("Schreiben von {} fehlgeschlagen", dest_so.display()))?;
+    ctx(write_atomic(&dest_so, &so_data, 0o755), || format!("Writing {} failed", dest_so.display()))?;
     let dest_manifest = vulkan_manifest_path();
     ctx(write_atomic(&dest_manifest, manifest.as_bytes(), 0o644), || {
-        format!("Schreiben von {} fehlgeschlagen", dest_manifest.display())
+        format!("Writing {} failed", dest_manifest.display())
     })
 }
 
@@ -185,7 +185,7 @@ fn remove_if_exists(p: &Path) -> Result<(), String> {
     match fs::remove_file(p) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("Entfernen von {} fehlgeschlagen: {e}", p.display())),
+        Err(e) => Err(format!("Removing {} failed: {e}", p.display())),
     }
 }
 
@@ -274,7 +274,7 @@ mod tests {
         fs::create_dir_all(data_home()).unwrap();
         fs::write(data_home().join("vulkan"), b"x").unwrap();
         let e = install(Some(&b)).unwrap_err();
-        assert!(e.contains("fehlgeschlagen"), "{e}");
+        assert!(e.contains("failed"), "{e}");
     }
 
     #[test]
