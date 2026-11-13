@@ -3,7 +3,7 @@
 # (glibc 2.35) via podman (or docker), then appimagetool packs it.
 # Usage: scripts/build-appimage.sh            output: $OUT_DIR/WiVRn-Monitor-x86_64.AppImage
 #        scripts/build-appimage.sh --native   (or APPIMAGE_NATIVE=1) build with the local toolchain, no container (used by CI
-#        inside an ubuntu:22.04 job; needs rust, build-essential, pkg-config, glslang-tools/glslc, binutils, curl)
+#        inside an ubuntu:22.04 job; needs rust, build-essential (g++), nasm, pkg-config, glslang-tools/glslc, binutils, curl)
 # Env: OUT_DIR (default /run/media/weslie/Daten/appimage-out), WORK (build data), TOOLS (appimagetool dir)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

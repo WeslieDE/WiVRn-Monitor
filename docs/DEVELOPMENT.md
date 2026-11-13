@@ -29,6 +29,15 @@ To try the viewer without touching your real install, use a temporary home and s
 
 Install round trip without a GUI: `WIVRN_MONITOR_HOME_OVERRIDE=/tmp/h wivrn-monitor-viewer --self-test-install`.
 
+Recording tests: unit tests plus `viewer/tests/record_e2e.rs` (encodes synthetic frames; checks the MP4 with `ffprobe`/`ffmpeg` if installed,
+otherwise skips that part). Tests never touch `~/Videos/VR`. Benchmark: `viewer/examples/rec_bench.rs` (see its header).
+
+## Build dependencies for recording
+
+The `openh264` crate compiles OpenH264 from source: a C++ compiler (`g++`, part of `build-essential`) is required, `nasm` is recommended
+(assembly speed-ups; without it the build still succeeds, silently using slower C++ code). `scripts/ci-deps.sh` and
+`scripts/Containerfile.build` install `nasm`. `cmake` is not needed. Builds take roughly a minute longer than before.
+
 ## AppImage
 
     scripts/build-appimage.sh      # -> /run/media/weslie/Daten/appimage-out/WiVRn-Monitor-x86_64.AppImage

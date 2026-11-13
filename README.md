@@ -24,6 +24,7 @@ If you know "Display VR View" from SteamVR: it's that idea, for WiVRn.
 
 - Shows everything you see in the headset: games, apps, menus and overlays.
 - Shows the right eye, cut to a normal widescreen picture (16:9).
+- Can record the picture as an MP4 video (see [Recording](#recording)).
 - A status bar tells you if everything is ready.
 - WiVRn itself stays untouched. Nothing is rebuilt or replaced.
 - One single file to download. No admin rights (root) needed.
@@ -78,6 +79,20 @@ Restart the WiVRn server once, for example via the WiVRn dashboard. WiVRn only p
 Connect your headset as usual and start a VR app or game. The picture appears in the window.
 
 You can open and close the window at any time. It connects by itself.
+
+# Recording
+
+WiVRn Monitor can record what arrives in the window as a video (the picture only: no menu, no FPS display, **no sound**).
+
+- **Where:** in `~/Videos/VR` (created automatically), named like `VR_2026-11-13_20-21-15.mp4`. It is a normal MP4 (H.264) that plays everywhere.
+- **Start / stop:** menu **Record → "Start recording" / "Stop recording"**, or press **F9**. While recording, a red dot and
+  "REC 00:12" show in the status bar and in the corner of the picture.
+- **Automatically:** tick **Record → "Record automatically when VR frames arrive"** (off by default, remembered). Recording then
+  starts with the first picture and ends when the VR session ends or no pictures arrive for 5 seconds. The next session gets a new file.
+- **Open the folder:** **Record → "Open recordings folder"**.
+- **Size:** about 1 minute = up to 60 MB (1280x720, 30 FPS; quiet scenes need less). Make sure there is free disk space.
+- If the disk is full or the folder is not writable, recording stops with a message and the window keeps running.
+  Files stay playable even if the program or PC crashes (you lose at most the last second).
 
 # The status bar
 
@@ -143,6 +158,7 @@ That can happen on KDE. It's only cosmetic and doesn't affect anything.
 - The icon was generated with AI and is inspired by the WiVRn mascot.
 - [WiVRn](https://github.com/WiVRn/WiVRn) is a separate project. WiVRn Monitor is unofficial and not affiliated with WiVRn.
   Without WiVRn, none of this would exist. Thanks to everyone working on it!
+- Video encoding uses [Cisco OpenH264](https://github.com/cisco/openh264) (BSD-2-Clause), built from source into the program; see [docs/TECHNICAL.md](docs/TECHNICAL.md#recording) for the patent note.
 
 # For developers
 

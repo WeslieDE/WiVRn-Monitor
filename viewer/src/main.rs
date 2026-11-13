@@ -2,11 +2,12 @@
 //! Listens on `~/.local/share/wivrn-monitor/monitor.sock`; the layer connects.
 //! UI: egui via eframe (glow, Wayland + X11), menu bar on top, status bar at the bottom.
 
-mod layer_install;
 mod net;
 
 use eframe::egui::{self, Color32, RichText};
-use layer_install::{Bundle, LayerState};
+use wivrn_monitor_viewer::layer_install::{self, Bundle, LayerState};
+use wivrn_monitor_viewer::recorder::{self, Event, RecStatus, Recorder};
+use wivrn_monitor_viewer::settings::Settings;
 use net::{FrameBuf, Shared, Wake};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,6 +20,7 @@ const RESTART_HINT: &str = "Restart the WiVRn server for the change to take effe
 const OK: Color32 = Color32::from_rgb(0x5C, 0xC0, 0x6E);
 const WARN: Color32 = Color32::from_rgb(0xE0, 0xA0, 0x30);
 const BAD: Color32 = Color32::from_rgb(0xD8, 0x5A, 0x50);
+const REC: Color32 = Color32::from_rgb(0xE5, 0x30, 0x30);
 const DIM: Color32 = Color32::from_rgb(0x9A, 0xA0, 0xAA);
 
 struct Status {
@@ -39,13 +41,18 @@ struct App {
     message: Option<(bool, String)>,
     restart_hint: bool,
     show_about: bool,
+    rec: Arc<Recorder>,
+    settings: Settings,
+    rec_status: RecStatus,
+    /// Last saved recording (file name) and when, shown in the status bar for a while.
+    rec_saved: Option<(String, Instant)>,
 }
 
 impl App {
-    fn new(shared: Shared) -> Self {
+    fn new(shared: Shared, rec: Arc<Recorder>, settings: Settings) -> Self {
         let bundle = layer_install::find_bundle();
         let status = Self::read_status(bundle.as_ref());
-        App { shared, bundle, status, texture: None, tex_seq: 0, show_fps_overlay: true, message: None, restart_hint: false, show_about: false }
+        App { shared, bundle, status, texture: None, tex_seq: 0, show_fps_overlay: true, message: None, restart_hint: false, show_about: false, rec, settings, rec_status: RecStatus::default(), rec_saved: None }
     }
 
     fn read_status(bundle: Option<&Bundle>) -> Status {
@@ -97,6 +104,24 @@ impl App {
         info
     }
 
+    /// Reads the recorder state; turns finished/failed recordings into messages.
+    fn update_rec_status(&mut self) {
+        self.rec_status = self.rec.status();
+        for ev in std::mem::take(&mut self.rec_status.events) {
+            match ev {
+                Event::Saved { path, bytes, .. } => {
+                    eprintln!("recording saved: {} ({} KiB)", path.display(), bytes / 1024);
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    self.rec_saved = Some((name, Instant::now()));
+                }
+                Event::Error(m) => self.message = Some((true, m)),
+            }
+        }
+        if self.rec_saved.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(20)) {
+            self.rec_saved = None;
+        }
+    }
+
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -121,6 +146,24 @@ impl App {
                 ui.separator();
                 if ui.button("Quit").clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.menu_button("Record", |ui| {
+                let label = if self.rec_status.recording { "Stop recording" } else { "Start recording" };
+                if ui.add(egui::Button::new(label).shortcut_text("F9")).clicked() {
+                    self.rec.toggle();
+                    ui.close();
+                }
+                if ui.checkbox(&mut self.settings.auto_record, "Record automatically when VR frames arrive").changed() {
+                    self.rec.set_auto(self.settings.auto_record);
+                    self.settings.save();
+                }
+                ui.separator();
+                if ui.button("Open recordings folder").clicked() {
+                    if let Err(e) = recorder::open_folder(&recorder::video_dir()) {
+                        eprintln!("open recordings folder: {e}");
+                    }
+                    ui.close();
                 }
             });
             ui.menu_button("View", |ui| {
@@ -162,6 +205,21 @@ impl App {
                 }
                 _ => dot(ui, DIM, "Frames: no new frames"),
             }
+            if self.rec_status.recording {
+                ui.separator();
+                let secs = self.rec_status.elapsed.as_secs();
+                let mut text = format!("REC {:02}:{:02}", secs / 60, secs % 60);
+                if self.rec_status.waiting {
+                    text.push_str(" (waiting for frames)");
+                }
+                if self.rec_status.dropped > 0 {
+                    text.push_str(&format!(" - {} frames dropped", self.rec_status.dropped));
+                }
+                dot(ui, REC, &text);
+            } else if let Some((name, _)) = &self.rec_saved {
+                ui.separator();
+                ui.label(RichText::new(format!("Saved: {name}")).small().color(OK));
+            }
         });
     }
 
@@ -188,6 +246,17 @@ impl App {
         ui.painter().image(tex.id(), img_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
         if fi.age.is_some_and(|a| a > STALE_AFTER) {
             overlay(ui, rect.left_top() + egui::vec2(8.0, 8.0), egui::Align2::LEFT_TOP, "No new frames", WARN);
+        }
+        if self.rec_status.recording {
+            let secs = self.rec_status.elapsed.as_secs();
+            let text = format!("REC {:02}:{:02}", secs / 60, secs % 60);
+            let pos = rect.left_bottom() + egui::vec2(8.0, -8.0);
+            let p = ui.painter();
+            let galley = p.layout_no_wrap(text, egui::FontId::monospace(14.0), Color32::WHITE);
+            let r = egui::Align2::LEFT_BOTTOM.anchor_size(pos + egui::vec2(18.0, 0.0), galley.size());
+            p.rect_filled(egui::Rect::from_min_max(r.min - egui::vec2(18.0, 4.0), r.max + egui::vec2(4.0, 4.0)), 3.0, Color32::from_black_alpha(150));
+            p.circle_filled(egui::pos2(r.min.x - 8.0, r.center().y), 5.0, REC);
+            p.galley(r.min, galley, Color32::WHITE);
         }
         if self.show_fps_overlay {
             overlay(ui, rect.right_top() + egui::vec2(-8.0, 8.0), egui::Align2::RIGHT_TOP, &format!("{} FPS  {w}x{h}", fi.fps), Color32::from_rgb(0xE6, 0xE8, 0xEC));
@@ -218,12 +287,22 @@ fn overlay(ui: &egui::Ui, pos: egui::Pos2, anchor: egui::Align2, text: &str, col
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Finish a running recording cleanly (last fragment, durations) before the process ends.
+        self.rec.shutdown();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.status.checked.elapsed() >= STATUS_REFRESH {
             self.refresh_status();
         }
         let fi = self.sync_frame(&ctx);
+        if ui.input(|i| i.key_pressed(egui::Key::F9)) {
+            self.rec.toggle();
+        }
+        self.rec.tick(Instant::now());
+        self.update_rec_status();
         // Keep age/FPS/status fresh even without incoming frames.
         ctx.request_repaint_after(Duration::from_millis(500));
 
@@ -323,6 +402,9 @@ fn main() {
         }
     };
     let shared: Shared = Arc::new(Mutex::new(FrameBuf::default()));
+    let settings = Settings::load();
+    let rec = Arc::new(Recorder::new(settings.auto_record));
+    let (net_rec, app_rec, exit_rec) = (rec.clone(), rec.clone(), rec);
     // 16:9 image area (1280x720) plus menu bar and status bar.
     let mut viewport = egui::ViewportBuilder::default()
             .with_title("WiVRn Monitor")
@@ -342,10 +424,11 @@ fn main() {
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
             let wake: Wake = Arc::new(move || ctx.request_repaint());
-            std::thread::Builder::new().name("net".into()).spawn(move || net::run(listener, net_shared, wake)).expect("spawn net thread");
-            Ok(Box::new(App::new(shared)))
+            std::thread::Builder::new().name("net".into()).spawn(move || net::run(listener, net_shared, wake, net_rec)).expect("spawn net thread");
+            Ok(Box::new(App::new(shared, app_rec, settings)))
         }),
     );
+    exit_rec.shutdown();
     let _ = std::fs::remove_file(&path);
     if let Err(e) = r {
         eprintln!("wivrn-monitor-viewer: {e}");

@@ -1,5 +1,6 @@
 //! Viewer-side socket server: accepts layer connections, receives frames from the shared-memory ring.
 
+use crate::recorder::Recorder;
 use std::collections::VecDeque;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
@@ -40,7 +41,7 @@ struct Active {
 
 /// Runs forever (own thread). Several layer processes may connect; the first is shown, the others
 /// wait in line and take over when it disconnects.
-pub fn run(listener: OwnedFd, shared: Shared, proxy: Wake) {
+pub fn run(listener: OwnedFd, shared: Shared, proxy: Wake, rec: Arc<Recorder>) {
     let mut waiting: VecDeque<OwnedFd> = VecDeque::new();
     let mut active: Option<Active> = None;
     loop {
@@ -63,8 +64,9 @@ pub fn run(listener: OwnedFd, shared: Shared, proxy: Wake) {
             }
         }
         if let Some(a) = active.as_mut() {
-            if ready.get(1) == Some(&true) && !pump(a, &shared, &proxy) {
+            if ready.get(1) == Some(&true) && !pump(a, &shared, &proxy, &rec) {
                 active = None;
+                rec.on_disconnect();
                 set_state(&shared, false);
                 proxy();
             }
@@ -92,7 +94,7 @@ fn set_state(shared: &Shared, connected: bool) {
 }
 
 /// Handles all currently readable messages. Returns false if the connection ended.
-fn pump(a: &mut Active, shared: &Shared, proxy: &Wake) -> bool {
+fn pump(a: &mut Active, shared: &Shared, proxy: &Wake, rec: &Recorder) -> bool {
     loop {
         match proto::recv_msg(a.fd.as_raw_fd()) {
             Ok(None) => return false,
@@ -102,7 +104,7 @@ fn pump(a: &mut Active, shared: &Shared, proxy: &Wake) -> bool {
                 return false;
             }
             Ok(Some((msg, fd))) => {
-                if !handle(a, msg, fd, shared, proxy) {
+                if !handle(a, msg, fd, shared, proxy, rec) {
                     return false;
                 }
             }
@@ -110,7 +112,7 @@ fn pump(a: &mut Active, shared: &Shared, proxy: &Wake) -> bool {
     }
 }
 
-fn handle(a: &mut Active, msg: Message, fd: Option<OwnedFd>, shared: &Shared, proxy: &Wake) -> bool {
+fn handle(a: &mut Active, msg: Message, fd: Option<OwnedFd>, shared: &Shared, proxy: &Wake, rec: &Recorder) -> bool {
     match msg {
         Message::Hello { version, pid } => {
             if version != proto::VERSION {
@@ -149,10 +151,10 @@ fn handle(a: &mut Active, msg: Message, fd: Option<OwnedFd>, shared: &Shared, pr
                 return true;
             }
             let Some(range) = info.slot_range(slot) else { return false };
+            // SAFETY: the layer does not touch the slot until we send Release.
+            let data = unsafe { map.slice(range) };
             {
                 let mut f = shared.lock().unwrap_or_else(|e| e.into_inner());
-                // SAFETY: the layer does not touch the slot until we send Release.
-                let data = unsafe { map.slice(range) };
                 f.rgba.clear();
                 f.rgba.extend_from_slice(data);
                 f.width = info.width;
@@ -165,6 +167,8 @@ fn handle(a: &mut Active, msg: Message, fd: Option<OwnedFd>, shared: &Shared, pr
                     f.recent.pop_front();
                 }
             }
+            // Recording gets exactly the received pixels (no UI); it only copies them and never blocks.
+            rec.on_frame(info.width, info.height, data, Instant::now());
             if proto::send_msg(a.fd.as_raw_fd(), &Message::Release { gen, slot }, None, true).is_err() {
                 // Layer vanished or its socket buffer is full; a dead peer is noticed by recv.
             }

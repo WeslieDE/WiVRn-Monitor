@@ -26,7 +26,7 @@ Run order does not matter: install the layer (viewer menu or script), restart `w
 `wivrn-monitor-viewer` (eframe/glow, Wayland + X11).
 
 - Menu bar: File → "Install layer", "Uninstall layer", "Remove old OpenXR layer" (only if legacy files exist), "Quit";
-  View → "FPS overlay"; Help → "About".
+  Record → "Start/Stop recording" (F9), "Record automatically when VR frames arrive", "Open recordings folder"; View → "FPS overlay"; Help → "About".
 - Status bar: Layer (installed / outdated – reinstall / not installed), WiVRn server (running / not running),
   Connection (waiting / connected), Frames (resolution, FPS, or age of the last frame).
 
@@ -47,6 +47,37 @@ Headless CLI flags of the viewer: `--install-layer`, `--uninstall-layer`, `--lay
 (use the latter with `WIVRN_MONITOR_HOME_OVERRIDE=/tmp/h`).
 
 Alternative install without the viewer: `scripts/install-server-layer.sh [--debug|--uninstall]`; restart `wivrn-server` afterwards.
+
+## Recording
+
+Code: `viewer/src/recorder/` (`mod.rs` front end, `worker.rs` encoder thread, `yuv.rs`, `mp4.rs`), `viewer/src/settings.rs`.
+
+- **What is recorded:** exactly the RGBA frames received from the layer (not the UI), at their original size (odd sizes are
+  cropped by one pixel to even), no audio. Menu Record / F9; setting `auto_record` in `~/.local/share/wivrn-monitor/viewer.json`.
+- **Output:** `~/Videos/VR/VR_YYYY-MM-DD_HH-MM-SS.mp4` (local time; `_2`, `_3` on name collision, files are created with
+  `create_new`, never overwritten). A resolution change, a connection end or 5 s without frames closes the file; the next frame opens a new one.
+  Auto mode additionally switches itself off then; a manual recording stays armed.
+- **Environment:** `WIVRN_MONITOR_VIDEO_DIR` replaces `~/Videos/VR` (tests; `WIVRN_MONITOR_HOME_OVERRIDE` moves `~` as well).
+- **Encoder:** Cisco OpenH264 via the `openh264` crate (source feature: C++ sources are compiled into the binary; `nasm` is used for
+  x86 assembly if present at build time, otherwise the plain C++ path is used - works, but slower). Constrained Baseline, level
+  auto (3.1 at 720p), bitrate mode 8 Mbit/s, frame skipping on, keyframe every 2 s (60 frames), 2 encoder threads, VUI BT.709 limited range.
+  Colour conversion RGBA(sRGB values) to I420, BT.709 limited range, fixed-point scalar code writing straight into the planes.
+- **Timeline:** constant 30 fps. A frame's slot is computed from its arrival time; surplus frames (source above 30 fps) are skipped
+  before any copying, missing slots are filled by re-encoding the previous picture (cheap), gaps longer than 1 s are cut out.
+- **Container:** own small fragmented MP4 writer (`ftyp`, `moov` with `mvex`, then `moof`+`mdat` per 30 frames, flushed to the OS
+  each time). After a crash everything up to the last full fragment plays. On a clean finish the `moov` is rewritten in place with the real
+  duration. Why not a classic MP4: its index is written at the end and a crash would lose the whole file. Why not Matroska: MP4 plays
+  in more players, browsers and editors.
+- **Threads:** the net thread only does a memcpy into a pooled buffer and a non-blocking `try_send` into a bounded queue (8 frames).
+  One `rec-encoder` thread per output file converts, encodes and writes. If the queue is full the frame is dropped and counted (status bar,
+  log); the gap is filled by a repeated picture. The UI thread only toggles and polls. Closing the window finalizes the file.
+- **Errors:** folder not creatable, disk full or write errors end the recording with an English message dialog; the viewer keeps running.
+  Auto mode does not retry until the next session.
+- **Measured (1280x720@30, no nasm, this machine):** 23-42 % of one core (simple to very detailed content), up to ~58 MB/min.
+- **Licence / patents:** OpenH264 is BSD-2-Clause. Cisco's patent licence for H.264 covers the binaries Cisco itself builds and distributes,
+  not binaries compiled from the source by others. This project compiles the source, so that patent grant does not apply here.
+  This is a factual note, not legal advice; check your own situation if you distribute the AppImage.
+- **Runtime dependency:** the viewer now links `libstdc++`/`libgcc_s` dynamically (only `GLIBCXX_3.4`, present on practically every desktop). Minimum glibc stays 2.35.
 
 ## Server layer (`server-layer/`, Vulkan layer inside `wivrn-server`)
 
@@ -88,6 +119,7 @@ Viewer / both:
 | `WIVRN_MONITOR_SOCK` | Socket path (default `~/.local/share/wivrn-monitor/monitor.sock`) |
 | `WIVRN_MONITOR_LAYER_DIR` | Directory with the layer files to install |
 | `WIVRN_MONITOR_HOME_OVERRIDE` | Redirects all install paths (tests only) |
+| `WIVRN_MONITOR_VIDEO_DIR` | Recording folder instead of `~/Videos/VR` (tests) |
 
 ## Troubleshooting
 
