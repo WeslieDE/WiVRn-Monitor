@@ -26,6 +26,10 @@ jobs:
   appimage:
     runs-on: ubuntu-latest
     container: ubuntu:22.04
+    # The default shell in the container is `sh` (dash), which has no `set -o pipefail`.
+    defaults:
+      run:
+        shell: bash
     env:
       ASSET: WiVRn-Monitor-x86_64.AppImage
     steps:
