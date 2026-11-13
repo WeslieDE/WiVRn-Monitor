@@ -5,6 +5,7 @@
 //! queue push, nothing else); one encoder thread per output file does conversion, H.264 encoding and file I/O;
 //! the UI thread toggles recording and reads the status. If the encoder falls behind, frames are dropped (counted).
 
+pub mod audio;
 pub mod mp4;
 mod worker;
 pub mod yuv;
@@ -17,6 +18,8 @@ use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use audio::engine::AudioControl;
+use audio::{AudioOptions, SourceFactory};
 use worker::{FrameMsg, Outcome, WorkerShared};
 
 pub use worker::{describe_io_error, BITRATE_BPS, KEYFRAME_INTERVAL};
@@ -94,9 +97,16 @@ pub fn open_folder(dir: &Path) -> Result<(), String> {
 pub struct SlotClock {
     t0: Option<Instant>,
     next: u64,
+    /// Keep long pauses on the timeline (needed when sound is recorded; the sound does not pause).
+    keep_gaps: bool,
 }
 
 impl SlotClock {
+    /// `keep_gaps`: pauses are not cut out of the timeline.
+    pub fn new(keep_gaps: bool) -> Self {
+        SlotClock { keep_gaps, ..Default::default() }
+    }
+
     /// Slot for a frame arriving at `now`, or `None` if that slot is already taken (source faster than 30 fps).
     pub fn slot_for(&mut self, now: Instant) -> Option<u64> {
         let t0 = *self.t0.get_or_insert(now);
@@ -104,7 +114,7 @@ impl SlotClock {
         if slot < self.next {
             return None;
         }
-        if slot - self.next > MAX_FILLED_GAP {
+        if !self.keep_gaps && slot - self.next > MAX_FILLED_GAP {
             // Long pause: do not fill it with a frozen picture, continue right after the last frame.
             self.t0 = Some(t0 + Duration::from_secs_f64((slot - self.next) as f64 / mp4::FPS as f64));
             slot = self.next;
@@ -139,7 +149,9 @@ impl Pool {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    Saved { path: PathBuf, bytes: u64, frames: u64 },
+    Saved { path: PathBuf, bytes: u64, frames: u64, audio: bool },
+    /// Something is wrong but the recording goes on (e.g. no sound); message is user-facing English.
+    Warning(String),
     /// Recording stopped because of this problem (message is user-facing English).
     Error(String),
 }
@@ -151,6 +163,8 @@ pub struct RecStatus {
     pub dropped: u64,
     /// Waiting for the first frame / the connection.
     pub waiting: bool,
+    /// The current file has a sound track.
+    pub audio: bool,
     pub events: Vec<Event>,
 }
 
@@ -159,6 +173,7 @@ struct Active {
     handle: JoinHandle<()>,
     shared: Arc<WorkerShared>,
     dims: (u32, u32),
+    audio: Option<AudioControl>,
 }
 
 struct Inner {
@@ -176,7 +191,12 @@ struct Inner {
     dropped: u64,
     events: Vec<Event>,
     dir: Option<PathBuf>,
+    audio: AudioOptions,
+    sources: Arc<SourcesFn>,
 }
+
+/// Creates the audio sources for the given options (replaced by fakes in tests).
+pub type SourcesFn = dyn Fn(AudioOptions) -> SourceFactory + Send + Sync;
 
 pub struct Recorder {
     inner: Mutex<Inner>,
@@ -185,6 +205,11 @@ pub struct Recorder {
 
 impl Recorder {
     pub fn new(auto_enabled: bool) -> Self {
+        Self::with_audio(auto_enabled, AudioOptions { enabled: false, ..Default::default() }, Arc::new(audio::pulse_factory))
+    }
+
+    /// `audio`: what to record next time; `sources`: how to open the devices.
+    pub fn with_audio(auto_enabled: bool, audio: AudioOptions, sources: Arc<SourcesFn>) -> Self {
         let pool = Pool::default();
         Recorder {
             inner: Mutex::new(Inner {
@@ -200,6 +225,8 @@ impl Recorder {
                 dropped: 0,
                 events: Vec::new(),
                 dir: None,
+                audio,
+                sources,
             }),
             pool,
         }
@@ -212,8 +239,18 @@ impl Recorder {
         r
     }
 
+    /// Records into `dir` from now on (tests).
+    pub fn set_dir(&self, dir: PathBuf) {
+        self.lock().dir = Some(dir);
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Sound options for the next file (a running recording keeps its own).
+    pub fn set_audio(&self, opts: AudioOptions) {
+        self.lock().audio = opts;
     }
 
     pub fn set_auto(&self, on: bool) {
@@ -258,14 +295,16 @@ impl Recorder {
                 return;
             }
         }
-        i.last_frame = Some(now);
-        if i.worker.as_ref().is_none_or(|a| a.dims != (width, height)) {
+        // After a long pause the file is closed; the sound of the pause must not be recorded without pictures.
+        let stale = i.worker.as_ref().is_some_and(|a| a.audio.is_some()) && idle_too_long(i.last_frame, now, IDLE_TIMEOUT);
+        if stale || i.worker.as_ref().is_none_or(|a| a.dims != (width, height)) {
             i.close_worker();
-            if let Err(e) = i.spawn_worker(width, height) {
+            if let Err(e) = i.spawn_worker(width, height, now) {
                 i.fail(format!("Cannot start the recording: {e}"));
                 return;
             }
         }
+        i.last_frame = Some(now);
         let Some(slot) = i.clock.slot_for(now) else { return };
         let mut buf = self.pool.take();
         buf.clear();
@@ -316,6 +355,7 @@ impl Recorder {
             elapsed: i.armed_since.map(|t| t.elapsed()).unwrap_or_default(),
             dropped: i.dropped,
             waiting: i.armed.is_some() && i.worker.is_none(),
+            audio: i.worker.as_ref().is_some_and(|a| a.shared.audio_on.load(std::sync::atomic::Ordering::Acquire)),
             events: std::mem::take(&mut i.events),
         }
     }
@@ -351,29 +391,38 @@ impl Inner {
         self.auto_blocked = true;
     }
 
-    fn spawn_worker(&mut self, width: u32, height: u32) -> io::Result<()> {
+    fn spawn_worker(&mut self, width: u32, height: u32, now: Instant) -> io::Result<()> {
         let dir = self.dir.clone().unwrap_or_else(video_dir);
         let (tx, rx) = sync_channel(QUEUE_CAP);
         let shared = Arc::new(WorkerShared::default());
         let (s, pool, stamp) = (shared.clone(), self.pool.clone(), timestamp_now());
-        let handle = std::thread::Builder::new().name("rec-encoder".into()).spawn(move || worker::run(dir, stamp, rx, s, pool))?;
-        self.clock = SlotClock::default();
-        self.worker = Some(Active { tx, handle, shared, dims: (width, height) });
+        // Sound: the engine starts now; timeline position 0 is the arrival of this first frame.
+        let engine = if self.audio.active() { audio::engine::start((self.sources)(self.audio), now).ok() } else { None };
+        let control = engine.as_ref().map(|e| e.control.clone());
+        let handle = std::thread::Builder::new().name("rec-encoder".into()).spawn(move || worker::run(dir, stamp, rx, s, pool, engine))?;
+        self.clock = SlotClock::new(control.is_some());
+        self.worker = Some(Active { tx, handle, shared, dims: (width, height), audio: control });
         Ok(())
     }
 
     /// Ends the current file: dropping the sender lets the thread finish the queued frames and close the file.
     fn close_worker(&mut self) {
         if let Some(a) = self.worker.take() {
-            let Active { tx, handle, shared, .. } = a;
+            let Active { tx, handle, shared, audio, .. } = a;
+            if let Some(c) = audio {
+                // The sound ends with the last picture.
+                c.finish(self.last_frame.map_or_else(Instant::now, |t| t + Duration::from_secs(1) / mp4::FPS));
+            }
             drop(tx);
             self.finishing.push((handle, shared));
         }
     }
 
     fn collect(&mut self, shared: &WorkerShared) -> bool {
+        let w = shared.take_warnings();
+        self.events.extend(w.into_iter().map(Event::Warning));
         match shared.take_outcome() {
-            Some(Outcome::Saved { path, bytes, frames }) => self.events.push(Event::Saved { path, bytes, frames }),
+            Some(Outcome::Saved { path, bytes, frames, audio }) => self.events.push(Event::Saved { path, bytes, frames, audio }),
             Some(Outcome::Failed { message, path }) => {
                 eprintln!("recorder: {message} ({path:?})");
                 self.events.push(Event::Error(format!("Recording stopped. {message}")));
@@ -388,6 +437,10 @@ impl Inner {
     fn poll(&mut self) {
         use std::sync::atomic::Ordering;
         let mut failed = false;
+        if let Some(a) = &self.worker {
+            let w = a.shared.take_warnings();
+            self.events.extend(w.into_iter().map(Event::Warning));
+        }
         if self.worker.as_ref().is_some_and(|a| a.shared.done.load(Ordering::Acquire)) {
             let a = self.worker.take().expect("checked");
             let _ = a.handle.join();
@@ -395,6 +448,8 @@ impl Inner {
         }
         let mut still = Vec::new();
         for (handle, shared) in std::mem::take(&mut self.finishing) {
+            let w = shared.take_warnings();
+            self.events.extend(w.into_iter().map(Event::Warning));
             if shared.done.load(Ordering::Acquire) {
                 let _ = handle.join();
                 self.collect(&shared);

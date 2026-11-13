@@ -1,14 +1,34 @@
 //! Recorder benchmark: reads raw RGBA frames from stdin and records them paced at 30 fps.
 //! Usage: ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30 -t 20 -pix_fmt rgba -f rawvideo - | \
 //!        WIVRN_MONITOR_VIDEO_DIR=/tmp/vr rec_bench [width height]
+//! Sound: `BENCH_AUDIO=fake` records two synthetic tones (440 Hz "microphone", 880 Hz "app"), `BENCH_AUDIO=real` the
+//! real devices (microphone included!); without it the recording has no sound.
 use std::io::Read;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use wivrn_monitor_viewer::recorder::audio::capture::fake::{SineCapture, SineSpec};
+use wivrn_monitor_viewer::recorder::audio::{self, AudioOptions, Sources};
 use wivrn_monitor_viewer::recorder::{Event, Recorder};
 
 fn main() {
     let args: Vec<usize> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
     let (w, h) = (args.first().copied().unwrap_or(1280), args.get(1).copied().unwrap_or(720));
-    let rec = Recorder::new(true);
+    let rec = match std::env::var("BENCH_AUDIO").as_deref() {
+        Ok("real") => Recorder::with_audio(true, AudioOptions::default(), Arc::new(audio::pulse_factory)),
+        Ok("fake") => Recorder::with_audio(
+            true,
+            AudioOptions::default(),
+            Arc::new(|_| {
+                Box::new(|| {
+                    Ok(Sources {
+                        mic: Some(Box::new(|| Ok(Box::new(SineCapture::new(SineSpec::default())) as _))),
+                        app: Some(Box::new(|| Ok(Box::new(SineCapture::new(SineSpec { freq: 880.0, channels: 2, ..Default::default() })) as _))),
+                    })
+                })
+            }),
+        ),
+        _ => Recorder::new(true),
+    };
     let mut buf = vec![0u8; w * h * 4];
     let mut stdin = std::io::stdin().lock();
     let start = Instant::now();
@@ -29,7 +49,8 @@ fn main() {
     let wall = start.elapsed().as_secs_f64();
     for e in rec.status().events {
         match e {
-            Event::Saved { path, bytes, frames } => println!("saved {} frames, {:.2} MB ({:.2} MB/min), {}", frames, bytes as f64 / 1e6, bytes as f64 / 1e6 / (frames as f64 / 30.0 / 60.0), path.display()),
+            Event::Saved { path, bytes, frames, audio } => println!("saved (audio: {audio}) {} frames, {:.2} MB ({:.2} MB/min), {}", frames, bytes as f64 / 1e6, bytes as f64 / 1e6 / (frames as f64 / 30.0 / 60.0), path.display()),
+            Event::Warning(m) => println!("warning: {m}"),
             Event::Error(m) => println!("error: {m}"),
         }
     }

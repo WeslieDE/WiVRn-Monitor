@@ -61,7 +61,7 @@ fn records_synthetic_frames_to_playable_mp4() {
     rec.stop();
     rec.shutdown();
     let st = rec.status();
-    let Some(Event::Saved { path, bytes, frames: written }) = st.events.first().cloned() else { panic!("no file saved: {:?}", st.events) };
+    let Some(Event::Saved { path, bytes, frames: written, .. }) = st.events.first().cloned() else { panic!("no file saved: {:?}", st.events) };
     assert!(st.events.len() == 1 && written >= 80, "{st:?}");
     assert!(path.starts_with(&out) && path.extension().unwrap() == "mp4");
     let size = std::fs::metadata(&path).unwrap().len();

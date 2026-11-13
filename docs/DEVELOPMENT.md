@@ -30,13 +30,21 @@ To try the viewer without touching your real install, use a temporary home and s
 Install round trip without a GUI: `WIVRN_MONITOR_HOME_OVERRIDE=/tmp/h wivrn-monitor-viewer --self-test-install`.
 
 Recording tests: unit tests plus `viewer/tests/record_e2e.rs` (encodes synthetic frames; checks the MP4 with `ffprobe`/`ffmpeg` if installed,
-otherwise skips that part). Tests never touch `~/Videos/VR`. Benchmark: `viewer/examples/rec_bench.rs` (see its header).
+otherwise skips that part). Sound: `viewer/tests/record_audio_e2e.rs` uses fake devices (`recorder::audio::capture::fake`, sine waves in real time) and needs `ffmpeg`/`ffprobe`
+(skipped without them; takes about 10 s). Tests never touch `~/Videos/VR` and never open a real audio device. Benchmark: `viewer/examples/rec_bench.rs`
+(`BENCH_AUDIO=fake` adds synthetic sound, `BENCH_AUDIO=real` the real devices, **including the microphone**). `viewer/examples/audio_probe.rs monitor|mic [s]` opens one real device
+and prints levels and timing without storing anything. Real-device check without disturbing your audio: `pactl load-module module-null-sink sink_name=wivrn_test`
+(the name makes it the preferred sink), play a tone with `paplay -d wivrn_test`, record, then `pactl unload-module`.
 
 ## Build dependencies for recording
 
 The `openh264` crate compiles OpenH264 from source: a C++ compiler (`g++`, part of `build-essential`) is required, `nasm` is recommended
 (assembly speed-ups; without it the build still succeeds, silently using slower C++ code). `scripts/ci-deps.sh` and
 `scripts/Containerfile.build` install `nasm`. `cmake` is not needed. Builds take roughly a minute longer than before.
+
+Sound recording adds **no** build dependency: the AAC encoder (`filmcraft-aac`) is pure Rust (needs Rust >= 1.95, edition 2024; rustup `stable` is fine) and `libpulse-simple` is loaded
+at run time with `dlopen` (`libloading`), so neither `libpulse-dev` nor a C++ audio library is needed to build, and the AppImage needs nothing extra to start. `ffmpeg` is only an
+optional test tool (see above); it is not in `ci-deps.sh`, so the e2e checks skip themselves on CI unless you add it.
 
 ## AppImage
 

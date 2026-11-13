@@ -46,13 +46,15 @@ struct App {
     rec_status: RecStatus,
     /// Last saved recording (file name) and when, shown in the status bar for a while.
     rec_saved: Option<(String, Instant)>,
+    /// Last recorder warning (e.g. "no sound") and when; shown in the status bar for a while.
+    rec_warning: Option<(String, Instant)>,
 }
 
 impl App {
     fn new(shared: Shared, rec: Arc<Recorder>, settings: Settings) -> Self {
         let bundle = layer_install::find_bundle();
         let status = Self::read_status(bundle.as_ref());
-        App { shared, bundle, status, texture: None, tex_seq: 0, show_fps_overlay: true, message: None, restart_hint: false, show_about: false, rec, settings, rec_status: RecStatus::default(), rec_saved: None }
+        App { shared, bundle, status, texture: None, tex_seq: 0, show_fps_overlay: true, message: None, restart_hint: false, show_about: false, rec, settings, rec_status: RecStatus::default(), rec_saved: None, rec_warning: None }
     }
 
     fn read_status(bundle: Option<&Bundle>) -> Status {
@@ -114,8 +116,12 @@ impl App {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     self.rec_saved = Some((name, Instant::now()));
                 }
+                Event::Warning(m) => self.rec_warning = Some((m, Instant::now())),
                 Event::Error(m) => self.message = Some((true, m)),
             }
+        }
+        if self.rec_warning.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(30)) {
+            self.rec_warning = None;
         }
         if self.rec_saved.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(20)) {
             self.rec_saved = None;
@@ -156,6 +162,22 @@ impl App {
                 }
                 if ui.checkbox(&mut self.settings.auto_record, "Record automatically when VR frames arrive").changed() {
                     self.rec.set_auto(self.settings.auto_record);
+                    self.settings.save();
+                }
+                ui.separator();
+                let idle = !self.rec_status.recording;
+                let mut changed = false;
+                changed |= ui.add_enabled(idle, egui::Checkbox::new(&mut self.settings.record_audio, "Record audio")).on_hover_text("Records sound into the video. Applies to the next recording.").changed();
+                ui.indent("audio-sources", |ui| {
+                    let on = idle && self.settings.record_audio;
+                    changed |= ui.add_enabled(on, egui::Checkbox::new(&mut self.settings.audio_mic, "Microphone")).on_hover_text("Your microphone (the default input, or the WiVRn headset microphone).").changed();
+                    changed |= ui.add_enabled(on, egui::Checkbox::new(&mut self.settings.audio_app, "App sound")).on_hover_text("Everything the applications play (the default output, or the WiVRn output).").changed();
+                });
+                if !idle {
+                    ui.label(RichText::new("Sound settings apply to the next recording.").small().weak());
+                }
+                if changed {
+                    self.rec.set_audio(self.settings.audio_options());
                     self.settings.save();
                 }
                 ui.separator();
@@ -209,6 +231,9 @@ impl App {
                 ui.separator();
                 let secs = self.rec_status.elapsed.as_secs();
                 let mut text = format!("REC {:02}:{:02}", secs / 60, secs % 60);
+                if self.rec_status.audio {
+                    text.push_str(" \u{b7} audio");
+                }
                 if self.rec_status.waiting {
                     text.push_str(" (waiting for frames)");
                 }
@@ -219,6 +244,10 @@ impl App {
             } else if let Some((name, _)) = &self.rec_saved {
                 ui.separator();
                 ui.label(RichText::new(format!("Saved: {name}")).small().color(OK));
+            }
+            if let Some((msg, _)) = &self.rec_warning {
+                ui.separator();
+                ui.label(RichText::new(msg).small().color(WARN));
             }
         });
     }
@@ -249,7 +278,7 @@ impl App {
         }
         if self.rec_status.recording {
             let secs = self.rec_status.elapsed.as_secs();
-            let text = format!("REC {:02}:{:02}", secs / 60, secs % 60);
+            let text = format!("REC {:02}:{:02}{}", secs / 60, secs % 60, if self.rec_status.audio { " \u{b7} audio" } else { "" });
             let pos = rect.left_bottom() + egui::vec2(8.0, -8.0);
             let p = ui.painter();
             let galley = p.layout_no_wrap(text, egui::FontId::monospace(14.0), Color32::WHITE);
@@ -403,7 +432,7 @@ fn main() {
     };
     let shared: Shared = Arc::new(Mutex::new(FrameBuf::default()));
     let settings = Settings::load();
-    let rec = Arc::new(Recorder::new(settings.auto_record));
+    let rec = Arc::new(Recorder::with_audio(settings.auto_record, settings.audio_options(), Arc::new(recorder::audio::pulse_factory)));
     let (net_rec, app_rec, exit_rec) = (rec.clone(), rec.clone(), rec);
     // 16:9 image area (1280x720) plus menu bar and status bar.
     let mut viewport = egui::ViewportBuilder::default()

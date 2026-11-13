@@ -17,6 +17,8 @@ eframe = { version = "0.37.0", default-features = false, features = ["glow", "wa
 serde_json = "1.0.154"
 libc = "0.2"
 openh264 = "0.9.10"
+filmcraft-aac = "0.9.0"
+libloading = "0.8"
 
 [dev-dependencies]
 tempfile = "3.27.0"
